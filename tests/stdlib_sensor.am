@@ -53,7 +53,18 @@ public class FakeClock implements Clock {
 
 public class FakeIn implements DigitalIn {
     public FakeIn() { }
-    public int Read() { return 0 }   // never echoes
+    public int Read() { return 0 }   // never echoes; HX711: ready + data 0
+}
+
+// SPI fake returning a fixed MAX6675 word 0x4000 → 2048 code → 512.00°C.
+public class FakeSpiTemp implements SpiBus {
+    public FakeSpiTemp() { }
+    public List<int> Transfer(tx: List<int>) {
+        let r: List<int> = new List<int>()
+        r.Add(0x40)
+        r.Add(0x00)
+        return r
+    }
 }
 public class FakeOut implements DigitalOut {
     public FakeOut() { }
@@ -89,6 +100,14 @@ public class Program {
         // ADS1115: canned conv reg 0x0100 = 256 → 256/8 = 32 mV.
         let ads: Ads1115 = new Ads1115(new FakeI2c(), 0x48, new FakeClock())
         if (ads.ReadMilliVolts(0) == 32) { Console.WriteLine("[PASS] ads1115 mV") } else { Console.WriteLine("[FAIL] ads1115 mV got " + String_FromInt(ads.ReadMilliVolts(0))); fail = fail + 1 }
+
+        // HX711: data line stuck low → ready + 24 zero bits → raw 0.
+        let scale: Hx711 = new Hx711(new FakeOut(), new FakeIn(), new FakeClock())
+        if (scale.IsReady() && scale.ReadRaw() == 0) { Console.WriteLine("[PASS] hx711 read") } else { Console.WriteLine("[FAIL] hx711 read"); fail = fail + 1 }
+
+        // MAX6675: canned 0x4000 → code 2048 → 512.00 °C → 51200 centi.
+        let tc: Max6675 = new Max6675(new FakeSpiTemp())
+        if (tc.TempCenti() == 51200) { Console.WriteLine("[PASS] max6675 512C") } else { Console.WriteLine("[FAIL] max6675 got " + String_FromInt(tc.TempCenti())); fail = fail + 1 }
 
         if (fail == 0) { Console.WriteLine("sensor: all good") }
     }

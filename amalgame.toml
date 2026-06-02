@@ -13,7 +13,7 @@
 
 [package]
 name              = "amalgame-hardware-sensor"
-version           = "0.4.0"
+version           = "0.5.0"
 license           = "Apache-2.0"
 description       = "Portable sensor drivers (HC-SR04 distance, MCP3008 SPI ADC, BME280 env, MPU6050 IMU, BH1750 light) over Amalgame.Hal — one driver, runs on Raspberry Pi and future MCU backends. For weather stations, drones, robots."
 authors           = ["Bastien Mouget"]
@@ -21,7 +21,7 @@ required-amalgame = ">=0.8.72"
 schema-version    = 1
 
 [stdlib]
-classes   = ["Hcsr04", "Mcp3008", "Bme280", "Mpu6050", "Bh1750", "Ina219", "Ads1115"]
+classes   = ["Hcsr04", "Mcp3008", "Bme280", "Mpu6050", "Bh1750", "Ina219", "Ads1115", "Hx711", "Max6675"]
 header    = "facade-stub.h"
 namespace = "Amalgame.Hardware.Sensor"
 facade    = "facade.am"

@@ -390,3 +390,82 @@ public class Ads1115 {
         return this.ReadRaw(channel) / 8
     }
 }
+
+// HX711 — 24-bit ADC for load cells (digital scales, force sensing).
+// 2-wire bit-bang: a clock out + a data in, paced by a Clock. Channel
+// A, gain 128. ReadRaw is signed 24-bit; Tare captures the zero offset.
+//
+// Note: bit-banged — keep SCK pulses short; works on a Pi when not
+// heavily preempted (like any userspace bit-bang).
+public class Hx711 {
+    private sck:    DigitalOut
+    private dt:     DigitalIn
+    private clk:    Clock
+    private offset: int
+
+    public Hx711(sck: DigitalOut, dt: DigitalIn, clk: Clock) {
+        this.sck = sck
+        this.dt  = dt
+        this.clk = clk
+        this.offset = 0
+        this.sck.Low()
+    }
+
+    public bool IsReady() { return this.dt.Read() == 0 }
+
+    // One 24-bit conversion (channel A, gain 128). Signed.
+    public int ReadRaw() {
+        var spins: int = 0
+        while (this.dt.Read() == 1) {
+            spins = spins + 1
+            if (spins > 2000000) { return 0 }   // not ready → bail
+        }
+        var v: int = 0
+        var i: int = 0
+        while (i < 24) {
+            this.sck.High()
+            v = v * 2
+            if (this.dt.Read() == 1) { v = v + 1 }
+            this.sck.Low()
+            i = i + 1
+        }
+        this.sck.High()    // 25th pulse → next read is ch A gain 128
+        this.sck.Low()
+        if (v > 8388607) { v = v - 16777216 }   // sign-extend 24-bit
+        return v
+    }
+
+    // Average `samples` readings as the zero point.
+    public void Tare(samples: int) {
+        if (samples <= 0) { return }
+        var sum: int = 0
+        var i: int = 0
+        while (i < samples) { sum = sum + this.ReadRaw(); i = i + 1 }
+        this.offset = sum / samples
+    }
+
+    public int ReadNet() { return this.ReadRaw() - this.offset }
+}
+
+// MAX6675 — K-type thermocouple to digital over SPI (read-only). Range
+// 0..1024 °C, 0.25 °C resolution. TempCenti returns °C ×100, or -1 if
+// the thermocouple is open.
+public class Max6675 {
+    private spi: SpiBus
+
+    public Max6675(spi: SpiBus) {
+        this.spi = spi
+    }
+
+    public int TempCenti() {
+        let tx: List<int> = new List<int>()
+        tx.Add(0)
+        tx.Add(0)
+        let rx: List<int> = this.spi.Transfer(tx)
+        if (rx.Count() < 2) { return 0 - 1 }
+        let raw: int = rx.Get(0) * 256 + rx.Get(1)
+        if ((raw / 4) % 2 == 1) { return 0 - 1 }   // D2 set → open thermocouple
+        let code: int = (raw / 8) % 4096           // D14..D3, 0.25°C/LSB
+        return code * 25
+    }
+}
