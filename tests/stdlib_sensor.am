@@ -23,12 +23,20 @@ public class FakeI2c implements I2cBus {
     public bool WriteByte(addr: int, value: int) { return true }
     public int  ReadByte(addr: int) { return 0 }
     public bool WriteReg(addr: int, reg: int, value: int) { return true }
-    public int  ReadReg(addr: int, reg: int) { if (reg == 208) { return 0x60 } return 0 }
+    public int  ReadReg(addr: int, reg: int) {
+        if (reg == 208) { return 0x60 }   // BME280 chip id
+        if (reg == 117) { return 0x68 }   // MPU6050 WHO_AM_I
+        return 0
+    }
     public bool WriteBytes(addr: int, bytes: List<int>) { return true }
     public List<int> ReadBytes(addr: int, count: int) {
+        // Canned burst: byte0=1 → first 16-bit word = 0x0100 = 256.
         let l: List<int> = new List<int>()
         var i: int = 0
-        while (i < count) { l.Add(0); i = i + 1 }
+        while (i < count) {
+            if (i == 0) { l.Add(1) } else { l.Add(0) }
+            i = i + 1
+        }
         return l
     }
 }
@@ -68,6 +76,11 @@ public class Program {
 
         let env: Bme280 = new Bme280(new FakeI2c(), 0x76)
         if (env.IsPresent()) { Console.WriteLine("[PASS] bme280 chip id") } else { Console.WriteLine("[FAIL] bme280 chip id"); fail = fail + 1 }
+
+        let imu: Mpu6050 = new Mpu6050(new FakeI2c(), 0x68)
+        if (imu.IsPresent()) { Console.WriteLine("[PASS] mpu6050 who-am-i") } else { Console.WriteLine("[FAIL] mpu6050 who-am-i"); fail = fail + 1 }
+        imu.Read()
+        if (imu.AccelX() == 256) { Console.WriteLine("[PASS] mpu6050 accelX burst") } else { Console.WriteLine("[FAIL] mpu6050 accelX got " + String_FromInt(imu.AccelX())); fail = fail + 1 }
 
         if (fail == 0) { Console.WriteLine("sensor: all good") }
     }
