@@ -82,6 +82,10 @@ public class Program {
         imu.Read()
         if (imu.AccelX() == 256) { Console.WriteLine("[PASS] mpu6050 accelX burst") } else { Console.WriteLine("[FAIL] mpu6050 accelX got " + String_FromInt(imu.AccelX())); fail = fail + 1 }
 
+        // INA219: canned reg 0x02 = 0x0100 → bus mV = (256/8)*4 = 128.
+        let pm: Ina219 = new Ina219(new FakeI2c(), 0x40)
+        if (pm.BusMilliVolts() == 128) { Console.WriteLine("[PASS] ina219 bus mV") } else { Console.WriteLine("[FAIL] ina219 bus mV got " + String_FromInt(pm.BusMilliVolts())); fail = fail + 1 }
+
         if (fail == 0) { Console.WriteLine("sensor: all good") }
     }
 }
