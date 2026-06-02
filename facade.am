@@ -469,3 +469,111 @@ public class Max6675 {
         return code * 25
     }
 }
+
+// SHT31 — Sensirion temperature + humidity (I²C addr 0x44/0x45). High
+// accuracy (±0.3 °C, ±2 %RH), the go-to for weather stations and HVAC.
+// Single-shot with clock stretching (0x2C06): the sensor holds SCL until
+// the conversion is done, so the read can follow the command directly —
+// no host-side delay needed.
+public class Sht31 {
+    private bus:    I2cBus
+    private addr:   int
+    private tCenti: int
+    private hCenti: int
+
+    public Sht31(bus: I2cBus, addr: int) {
+        this.bus = bus
+        this.addr = addr
+        this.tCenti = 0
+        this.hCenti = 0
+    }
+
+    // Trigger a measurement and latch temperature (°C ×100) + relative
+    // humidity (%RH ×100). Returns false on a short read.
+    public bool Read() {
+        let cmd: List<int> = new List<int>()
+        cmd.Add(0x2C); cmd.Add(0x06)              // high-rep, clock stretch
+        let _w: bool = this.bus.WriteBytes(this.addr, cmd)
+        let d: List<int> = this.bus.ReadBytes(this.addr, 6)
+        if (d.Count() < 6) { return false }
+        let traw: int = d.Get(0) * 256 + d.Get(1)
+        let hraw: int = d.Get(3) * 256 + d.Get(4)
+        // T(°C) = -45 + 175*traw/65535 ; RH(%) = 100*hraw/65535.
+        this.tCenti = (17500 * traw) / 65535 - 4500
+        this.hCenti = (10000 * hraw) / 65535
+        return true
+    }
+
+    public int TempCenti()     { return this.tCenti }   // °C ×100
+    public int HumidityCenti() { return this.hCenti }   // %RH ×100
+}
+
+// AHT20 — cheap, ubiquitous temperature + humidity (I²C addr 0x38). The
+// measurement takes ~80 ms, so this driver needs a Clock to wait for it.
+public class Aht20 {
+    private bus:    I2cBus
+    private clk:    Clock
+    private tCenti: int
+    private hCenti: int
+
+    public Aht20(bus: I2cBus, clk: Clock) {
+        this.bus = bus
+        this.clk = clk
+        this.tCenti = 0
+        this.hCenti = 0
+        // Calibrate / init.
+        let init: List<int> = new List<int>()
+        init.Add(0xBE); init.Add(0x08); init.Add(0x00)
+        let _i: bool = this.bus.WriteBytes(0x38, init)
+        this.clk.DelayMs(10)
+    }
+
+    // Trigger + read: status, then 20-bit humidity and 20-bit temperature.
+    public bool Read() {
+        let trig: List<int> = new List<int>()
+        trig.Add(0xAC); trig.Add(0x33); trig.Add(0x00)
+        let _t: bool = this.bus.WriteBytes(0x38, trig)
+        this.clk.DelayMs(80)
+        let d: List<int> = this.bus.ReadBytes(0x38, 7)
+        if (d.Count() < 7) { return false }
+        // hum[19:0] = d1<<12 | d2<<4 | d3>>4
+        let hraw: int = d.Get(1) * 4096 + d.Get(2) * 16 + d.Get(3) / 16
+        // temp[19:0] = (d3 & 0x0F)<<16 | d4<<8 | d5
+        let traw: int = (d.Get(3) % 16) * 65536 + d.Get(4) * 256 + d.Get(5)
+        // RH(%) = hraw/2^20*100 ; T(°C) = traw/2^20*200 - 50. Scaled ×100,
+        // dividing by 2^20 = 1048576.
+        this.hCenti = (hraw / 1048576) * 10000 + ((hraw % 1048576) * 10000) / 1048576
+        this.tCenti = ((traw * 20000) / 1048576) - 5000
+        return true
+    }
+
+    public int TempCenti()     { return this.tCenti }   // °C ×100
+    public int HumidityCenti() { return this.hCenti }   // %RH ×100
+}
+
+// DS18B20 — the iconic waterproof 1-Wire temperature probe. On Linux the
+// kernel w1 driver exposes each sensor as a sysfs file, so this reads it
+// directly (no @c) — point it at /sys/bus/w1/devices/28-XXXX/w1_slave.
+// Linux/Pi only: 1-Wire bit-banging for MCU backends is future work.
+public class Ds18b20 {
+    private path: string
+
+    public Ds18b20(devicePath: string) { this.path = devicePath }
+
+    // Build the sysfs path from a sensor id like "28-0000074b...".
+    public static string SysPath(id: string) {
+        return "/sys/bus/w1/devices/" + id + "/w1_slave"
+    }
+
+    // Temperature in °C ×100, or -99900 (-999 °C) if unreadable / no CRC.
+    public int TempCenti() {
+        if (!File.Exists(this.path)) { return 0 - 99900 }
+        let s: string = File.ReadAll(this.path)
+        if (!String_Contains(s, "YES")) { return 0 - 99900 }   // CRC failed
+        let i: int = String_IndexOf(s, "t=")
+        if (i < 0) { return 0 - 99900 }
+        let rest: string = String_Substring(s, i + 2, String_Length(s) - (i + 2))
+        let milli: int = String_ToInt(rest)                    // milli-°C
+        return milli / 10                                      // → centi-°C
+    }
+}

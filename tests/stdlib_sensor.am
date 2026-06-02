@@ -74,6 +74,40 @@ public class FakeOut implements DigitalOut {
     public void Toggle() { }
 }
 
+// SHT31 fake: ReadBytes → traw=0x6666, hraw=0x8000 (CRC bytes ignored).
+public class FakeSht implements I2cBus {
+    public FakeSht() { }
+    public bool WriteByte(addr: int, value: int) { return true }
+    public int  ReadByte(addr: int) { return 0 }
+    public bool WriteReg(addr: int, reg: int, value: int) { return true }
+    public int  ReadReg(addr: int, reg: int) { return 0 }
+    public bool WriteBytes(addr: int, bytes: List<int>) { return true }
+    public List<int> ReadBytes(addr: int, count: int) {
+        let l: List<int> = new List<int>()
+        l.Add(0x66); l.Add(0x66); l.Add(0)     // temp + crc
+        l.Add(0x80); l.Add(0x00); l.Add(0)     // hum  + crc
+        return l
+    }
+}
+
+// AHT20 fake: status ok, hum raw 0x80000, temp raw 0x60000.
+public class FakeAht implements I2cBus {
+    public FakeAht() { }
+    public bool WriteByte(addr: int, value: int) { return true }
+    public int  ReadByte(addr: int) { return 0 }
+    public bool WriteReg(addr: int, reg: int, value: int) { return true }
+    public int  ReadReg(addr: int, reg: int) { return 0 }
+    public bool WriteBytes(addr: int, bytes: List<int>) { return true }
+    public List<int> ReadBytes(addr: int, count: int) {
+        let l: List<int> = new List<int>()
+        l.Add(0x1C)                            // status (not busy)
+        l.Add(0x80); l.Add(0x00); l.Add(0x06)  // hum[19:4] + shared nibble
+        l.Add(0x00); l.Add(0x00)               // temp[15:0]
+        l.Add(0)                               // crc
+        return l
+    }
+}
+
 public class Program {
     public static void Main(string[] args) {
         var fail: int = 0
@@ -108,6 +142,22 @@ public class Program {
         // MAX6675: canned 0x4000 → code 2048 → 512.00 °C → 51200 centi.
         let tc: Max6675 = new Max6675(new FakeSpiTemp())
         if (tc.TempCenti() == 51200) { Console.WriteLine("[PASS] max6675 512C") } else { Console.WriteLine("[FAIL] max6675 got " + String_FromInt(tc.TempCenti())); fail = fail + 1 }
+
+        // SHT31: traw=0x6666 → 25.00 °C ; hraw=0x8000 → 50.00 %RH.
+        let sht: Sht31 = new Sht31(new FakeSht(), 0x44)
+        let _sr: bool = sht.Read()
+        if (sht.TempCenti() == 2500 && sht.HumidityCenti() == 5000) { Console.WriteLine("[PASS] sht31 25.00C/50%") } else { Console.WriteLine("[FAIL] sht31 t=" + String_FromInt(sht.TempCenti()) + " h=" + String_FromInt(sht.HumidityCenti())); fail = fail + 1 }
+
+        // AHT20: temp raw 0x60000 → 25.00 °C ; hum raw 0x80000 → 50.00 %RH.
+        let aht: Aht20 = new Aht20(new FakeAht(), new FakeClock())
+        let _ar: bool = aht.Read()
+        if (aht.TempCenti() == 2500 && aht.HumidityCenti() == 5000) { Console.WriteLine("[PASS] aht20 25.00C/50%") } else { Console.WriteLine("[FAIL] aht20 t=" + String_FromInt(aht.TempCenti()) + " h=" + String_FromInt(aht.HumidityCenti())); fail = fail + 1 }
+
+        // DS18B20: write a fake sysfs w1_slave file, parse t=23456 → 23.45 °C.
+        let w1: string = "ds18b20_test.w1"
+        let _w1: bool = File.WriteAll(w1, "a1 01 4b 46 7f ff 0c 10 1e : crc=2f YES\na1 01 4b 46 7f ff 0c 10 1e t=23456\n")
+        let probe: Ds18b20 = new Ds18b20(w1)
+        if (probe.TempCenti() == 2345) { Console.WriteLine("[PASS] ds18b20 23.45C") } else { Console.WriteLine("[FAIL] ds18b20 got " + String_FromInt(probe.TempCenti())); fail = fail + 1 }
 
         if (fail == 0) { Console.WriteLine("sensor: all good") }
     }
