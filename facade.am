@@ -301,3 +301,50 @@ public class Bh1750 {
         return (raw * 10) / 12                                 // /1.2 → lux
     }
 }
+
+// INA219 — high-side current / voltage / power monitor over I²C. Great
+// for battery, solar and motor-current monitoring. Registers are
+// big-endian 16-bit. Defaults assume the common 0.1 Ω shunt (current
+// LSB 0.1 mA); call Configure(cal) for a different shunt.
+public class Ina219 {
+    private bus:  I2cBus
+    private addr: int
+
+    public Ina219(bus: I2cBus, addr: int) {
+        this.bus = bus
+        this.addr = addr
+        this.Configure(4096)   // 0.1Ω shunt, 0.1mA/bit, 2mW/bit
+    }
+
+    // Write the config (0x399F: 32V, ±320mV, 12-bit, continuous) and
+    // calibration register (0.04096 / (currentLSB·Rshunt)).
+    public void Configure(cal: int) {
+        this.WriteReg16(0x00, 0x399F)
+        this.WriteReg16(0x05, cal)
+    }
+
+    public int BusMilliVolts()   { let raw: int = this.U16(0x02); return (raw / 8) * 4 }  // bits15..3, 4mV
+    public int ShuntMicroVolts() { return this.S16(0x01) * 10 }                            // 10µV/bit
+    public int CurrentMilliAmps(){ return this.S16(0x04) / 10 }                            // 0.1mA/bit
+    public int PowerMilliWatts() { return this.U16(0x03) * 2 }                             // 2mW/bit
+
+    private List<int> One(b: int) { let l: List<int> = new List<int>(); l.Add(b); return l }
+    private int U16(reg: int) {
+        let _w: bool = this.bus.WriteBytes(this.addr, this.One(reg))
+        let d: List<int> = this.bus.ReadBytes(this.addr, 2)
+        if (d.Count() < 2) { return 0 }
+        return d.Get(0) * 256 + d.Get(1)
+    }
+    private int S16(reg: int) {
+        let v: int = this.U16(reg)
+        if (v > 32767) { return v - 65536 }
+        return v
+    }
+    private void WriteReg16(reg: int, val: int) {
+        let l: List<int> = new List<int>()
+        l.Add(reg)
+        l.Add(val / 256)
+        l.Add(val % 256)
+        let _w: bool = this.bus.WriteBytes(this.addr, l)
+    }
+}
