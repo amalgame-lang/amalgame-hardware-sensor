@@ -1,0 +1,74 @@
+// Test sensor drivers against fake HAL backends (no hardware).
+
+namespace Tests
+
+import Amalgame.Hal
+import Amalgame.Hardware.Sensor
+
+// Fake SPI that echoes a fixed MCP3008 reply (0x03FF = 1023).
+public class FakeSpi implements SpiBus {
+    public FakeSpi() { }
+    public List<int> Transfer(tx: List<int>) {
+        let r: List<int> = new List<int>()
+        r.Add(0)
+        r.Add(3)
+        r.Add(255)
+        return r
+    }
+}
+
+// Fake I2C reporting the BME280 chip id (0xD0 → 0x60).
+public class FakeI2c implements I2cBus {
+    public FakeI2c() { }
+    public bool WriteByte(addr: int, value: int) { return true }
+    public int  ReadByte(addr: int) { return 0 }
+    public bool WriteReg(addr: int, reg: int, value: int) { return true }
+    public int  ReadReg(addr: int, reg: int) { if (reg == 208) { return 0x60 } return 0 }
+    public bool WriteBytes(addr: int, bytes: List<int>) { return true }
+    public List<int> ReadBytes(addr: int, count: int) {
+        let l: List<int> = new List<int>()
+        var i: int = 0
+        while (i < count) { l.Add(0); i = i + 1 }
+        return l
+    }
+}
+
+// Fake clock whose Micros() advances 1 ms per call → HC-SR04 times out.
+public class FakeClock implements Clock {
+    private t: int
+    public FakeClock() { this.t = 0 }
+    public void DelayMs(ms: int) { }
+    public void DelayUs(us: int) { }
+    public int Millis() { return 0 }
+    public int Micros() { this.t = this.t + 1000; return this.t }
+}
+
+public class FakeIn implements DigitalIn {
+    public FakeIn() { }
+    public int Read() { return 0 }   // never echoes
+}
+public class FakeOut implements DigitalOut {
+    public FakeOut() { }
+    public void Write(level: int) { }
+    public void High() { }
+    public void Low()  { }
+    public void Toggle() { }
+}
+
+public class Program {
+    public static void Main(string[] args) {
+        var fail: int = 0
+
+        let adc: Mcp3008 = new Mcp3008(new FakeSpi())
+        if (adc.Read(0) == 1023) { Console.WriteLine("[PASS] mcp3008 reads 1023") } else { Console.WriteLine("[FAIL] mcp3008 got " + String_FromInt(adc.Read(0))); fail = fail + 1 }
+        if (adc.Read(9) == (0 - 1)) { Console.WriteLine("[PASS] mcp3008 bad channel") } else { Console.WriteLine("[FAIL] mcp3008 bad channel"); fail = fail + 1 }
+
+        let d: Hcsr04 = new Hcsr04(new FakeOut(), new FakeIn(), new FakeClock())
+        if (d.ReadCm() == (0 - 1)) { Console.WriteLine("[PASS] hcsr04 timeout = -1") } else { Console.WriteLine("[FAIL] hcsr04 timeout"); fail = fail + 1 }
+
+        let env: Bme280 = new Bme280(new FakeI2c(), 0x76)
+        if (env.IsPresent()) { Console.WriteLine("[PASS] bme280 chip id") } else { Console.WriteLine("[FAIL] bme280 chip id"); fail = fail + 1 }
+
+        if (fail == 0) { Console.WriteLine("sensor: all good") }
+    }
+}

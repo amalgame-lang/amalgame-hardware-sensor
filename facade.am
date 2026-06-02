@@ -1,0 +1,222 @@
+namespace Amalgame.Hardware.Sensor
+
+// ── Amalgame.Hardware.Sensor — portable sensor drivers ────
+//
+// Written once against Amalgame.Hal, so the same drivers run on a
+// Raspberry Pi (amalgame-hardware-gpio backend) and on a future MCU
+// backend. Covers the maker/IoT staples: ultrasonic distance, an SPI
+// ADC (the Pi has none), and the BME280 temperature/pressure/humidity
+// sensor (weather stations, drone altimetry).
+//
+//     import Amalgame.Hardware          // GpioOut/GpioIn, Spi, I2c, SysClock
+//     import Amalgame.Hardware.Sensor
+//
+//     let d = new Hcsr04(new GpioOut(23), new GpioIn(24), new SysClock())
+//     let cm = d.ReadCm()
+//
+//     let adc = new Mcp3008(new Spi(0, 0))
+//     let raw = adc.Read(0)            // 0..1023
+//
+//     let env = new Bme280(new I2c(1), 0x76)
+//     env.Read()                       // refresh
+//     let t = env.TempCenti()          // °C ×100
+
+import Amalgame.Hal
+
+// HC-SR04 ultrasonic range finder. Trigger a 10µs pulse, then time the
+// echo high-pulse: distance(cm) = echo_us / 58. Returns -1 on timeout
+// (no echo within ~25 ms ≈ 4 m).
+public class Hcsr04 {
+    private trig: DigitalOut
+    private echo: DigitalIn
+    private clk:  Clock
+
+    public Hcsr04(trig: DigitalOut, echo: DigitalIn, clk: Clock) {
+        this.trig = trig
+        this.echo = echo
+        this.clk  = clk
+        this.trig.Low()
+    }
+
+    // Distance in centimetres, or -1 on timeout / no echo.
+    public int ReadCm() {
+        // 10µs trigger pulse.
+        this.trig.Low()
+        this.clk.DelayUs(2)
+        this.trig.High()
+        this.clk.DelayUs(10)
+        this.trig.Low()
+
+        // Wait for echo to go high (start), with a timeout.
+        let start0: int = this.clk.Micros()
+        while (this.echo.Read() == 0) {
+            if (this.clk.Micros() - start0 > 25000) { return 0 - 1 }
+        }
+        let t0: int = this.clk.Micros()
+        // Wait for echo to go low (end).
+        while (this.echo.Read() == 1) {
+            if (this.clk.Micros() - t0 > 25000) { return 0 - 1 }
+        }
+        let t1: int = this.clk.Micros()
+        return (t1 - t0) / 58
+    }
+}
+
+// MCP3008 — 8-channel 10-bit SPI ADC. Standard 3-byte transaction:
+// start bit, single-ended channel select, then 10 result bits.
+public class Mcp3008 {
+    private spi: SpiBus
+
+    public Mcp3008(spi: SpiBus) {
+        this.spi = spi
+    }
+
+    // Read channel 0..7 → 0..1023 (-1 on bad channel).
+    public int Read(channel: int) {
+        if (channel < 0 || channel > 7) { return 0 - 1 }
+        let tx: List<int> = new List<int>()
+        tx.Add(1)                       // start bit
+        tx.Add((8 + channel) * 16)      // single-ended | channel, high nibble
+        tx.Add(0)
+        let rx: List<int> = this.spi.Transfer(tx)
+        if (rx.Count() < 3) { return 0 - 1 }
+        let hi: int = rx.Get(1) % 4     // low 2 bits of byte 1
+        let lo: int = rx.Get(2)
+        return hi * 256 + lo
+    }
+}
+
+// BME280 — temperature / pressure / humidity over I2C (addr 0x76 or
+// 0x77). Read() refreshes; accessors return fixed-point integers.
+// Uses Bosch's reference integer compensation (datasheet §4.2.3 /
+// §8.1). Validate raw values against a known device.
+public class Bme280 {
+    private bus:  I2cBus
+    private addr: int
+    // calibration
+    private t1: int  private t2: int  private t3: int
+    private p1: int  private p2: int  private p3: int  private p4: int
+    private p5: int  private p6: int  private p7: int  private p8: int  private p9: int
+    private h1: int  private h2: int  private h3: int  private h4: int  private h5: int  private h6: int
+    private tFine: int
+    // last raw + compensated
+    private tCenti: int    // °C ×100
+    private pPa:    int     // Pa
+    private hMilli: int     // %RH ×1000
+
+    public Bme280(bus: I2cBus, addr: int) {
+        this.bus  = bus
+        this.addr = addr
+        this.tFine = 0
+        this.tCenti = 0
+        this.pPa = 0
+        this.hMilli = 0
+        this.LoadCalibration()
+        // Config: humidity oversampling x1, then ctrl_meas temp/press x1,
+        // normal mode (0x27). Humidity must be written before ctrl_meas.
+        let _h: bool = this.bus.WriteReg(this.addr, 0xF2, 0x01)
+        let _m: bool = this.bus.WriteReg(this.addr, 0xF4, 0x27)
+    }
+
+    public bool IsPresent() {
+        return this.bus.ReadReg(this.addr, 0xD0) == 0x60   // BME280 chip id
+    }
+
+    public int TempCenti()  { return this.tCenti }
+    public int PressurePa() { return this.pPa }
+    public int HumidityMilli() { return this.hMilli }
+
+    // Burst-read the raw 20-bit temp/press + 16-bit humidity and run
+    // the compensations. Call before the accessors.
+    public void Read() {
+        // Point at 0xF7 (press MSB) then burst-read 8 bytes 0xF7..0xFE.
+        let _w: bool = this.bus.WriteBytes(this.addr, this.OneByte(0xF7))
+        let raw: List<int> = this.bus.ReadBytes(this.addr, 8)
+        if (raw.Count() < 8) { return }
+        let adcP: int = raw.Get(0) * 4096 + raw.Get(1) * 16 + raw.Get(2) / 16
+        let adcT: int = raw.Get(3) * 4096 + raw.Get(4) * 16 + raw.Get(5) / 16
+        let adcH: int = raw.Get(6) * 256 + raw.Get(7)
+        this.CompensateT(adcT)
+        this.CompensateP(adcP)
+        this.CompensateH(adcH)
+    }
+
+    private List<int> OneByte(b: int) {
+        let l: List<int> = new List<int>()
+        l.Add(b)
+        return l
+    }
+
+    // ── calibration load ──
+    private int U8(reg: int)  { return this.bus.ReadReg(this.addr, reg) }
+    private int U16(lo: int)  { return this.bus.ReadReg(this.addr, lo) + this.bus.ReadReg(this.addr, lo + 1) * 256 }
+    private int S16(lo: int) {
+        let v: int = this.U16(lo)
+        if (v > 32767) { return v - 65536 }
+        return v
+    }
+
+    private void LoadCalibration() {
+        this.t1 = this.U16(0x88)
+        this.t2 = this.S16(0x8A)
+        this.t3 = this.S16(0x8C)
+        this.p1 = this.U16(0x8E)
+        this.p2 = this.S16(0x90)
+        this.p3 = this.S16(0x92)
+        this.p4 = this.S16(0x94)
+        this.p5 = this.S16(0x96)
+        this.p6 = this.S16(0x98)
+        this.p7 = this.S16(0x9A)
+        this.p8 = this.S16(0x9C)
+        this.p9 = this.S16(0x9E)
+        this.h1 = this.U8(0xA1)
+        this.h2 = this.S16(0xE1)
+        this.h3 = this.U8(0xE3)
+        let e4: int = this.U8(0xE4)
+        let e5: int = this.U8(0xE5)
+        let e6: int = this.U8(0xE6)
+        this.h4 = e4 * 16 + (e5 % 16)
+        this.h5 = (e6 * 16) + (e5 / 16)
+        var h6: int = this.U8(0xE7)
+        if (h6 > 127) { h6 = h6 - 256 }
+        this.h6 = h6
+    }
+
+    // Bosch integer compensation (datasheet reference).
+    private void CompensateT(adcT: int) {
+        let v1: int = (((adcT / 8) - (this.t1 * 2)) * this.t2) / 2048
+        let v2a: int = (adcT / 16) - this.t1
+        let v2: int = (((v2a * v2a) / 4096) * this.t3) / 16384
+        this.tFine = v1 + v2
+        this.tCenti = (this.tFine * 5 + 128) / 256
+    }
+
+    private void CompensateP(adcP: int) {
+        // Bosch BME280_compensate_P_int32, lifted to i64 (so the 32-bit
+        // unsigned-overflow branch collapses to a single divide).
+        var v1: int = (this.tFine / 2) - 64000
+        var v2: int = (((v1 / 4) * (v1 / 4)) / 2048) * this.p6
+        v2 = v2 + ((v1 * this.p5) * 2)
+        v2 = (v2 / 4) + (this.p4 * 65536)
+        v1 = ((((this.p3 * (((v1 / 4) * (v1 / 4)) / 8192)) / 8) + ((this.p2 * v1) / 2)) / 262144)
+        v1 = ((32768 + v1) * this.p1) / 32768
+        if (v1 == 0) { this.pPa = 0; return }
+        var p: int = ((1048576 - adcP) - (v2 / 4096)) * 3125
+        p = (p * 2) / v1
+        let v3: int = (this.p9 * (((p / 8) * (p / 8)) / 8192)) / 4096
+        let v4: int = ((p / 4) * this.p8) / 8192
+        p = p + ((v3 + v4 + this.p7) / 16)
+        this.pPa = p
+    }
+
+    private void CompensateH(adcH: int) {
+        var v: int = this.tFine - 76800
+        v = (((((adcH * 16384) - (this.h4 * 1048576) - (this.h5 * v)) + 16384) / 32768) *
+             (((((((v * this.h6) / 1024) * (((v * this.h3) / 2048) + 32768)) / 1024) + 2097152) * this.h2 + 8192) / 16384))
+        v = v - (((((v / 32768) * (v / 32768)) / 128) * this.h1) / 16)
+        if (v < 0) { v = 0 }
+        if (v > 419430400) { v = 419430400 }
+        // v is %RH in Q22.10 → ×1000 milli-percent.
+        this.hMilli = ((v / 1024) * 1000) / 1024
+    }
+}
