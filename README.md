@@ -26,5 +26,8 @@ let tC   = env.TempCenti()        // °C ×100
 | `Hcsr04(trig: DigitalOut, echo: DigitalIn, clk: Clock)` | `ReadCm()` → cm (-1 on timeout) |
 | `Mcp3008(spi: SpiBus)` | `Read(ch 0..7)` → 0..1023 |
 | `Bme280(bus: I2cBus, addr)` | `Read()`, `TempCenti()`, `PressurePa()`, `HumidityMilli()`, `IsPresent()` |
+| `Sht31(bus: I2cBus, addr)` | `Read()`, `TempCenti()`, `HumidityCenti()` — high-accuracy temp/humidity |
+| `Aht20(bus: I2cBus, clk: Clock)` | `Read()`, `TempCenti()`, `HumidityCenti()` — cheap temp/humidity |
+| `Ds18b20(devicePath)` | `TempCenti()`, static `SysPath(id)` — 1-Wire probe (Linux/Pi sysfs) |
 
-Requires amc ≥ 0.8.72. Apache-2.0.
+Requires amc ≥ 0.8.73. Apache-2.0.
