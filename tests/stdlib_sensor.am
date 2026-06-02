@@ -86,6 +86,10 @@ public class Program {
         let pm: Ina219 = new Ina219(new FakeI2c(), 0x40)
         if (pm.BusMilliVolts() == 128) { Console.WriteLine("[PASS] ina219 bus mV") } else { Console.WriteLine("[FAIL] ina219 bus mV got " + String_FromInt(pm.BusMilliVolts())); fail = fail + 1 }
 
+        // ADS1115: canned conv reg 0x0100 = 256 → 256/8 = 32 mV.
+        let ads: Ads1115 = new Ads1115(new FakeI2c(), 0x48, new FakeClock())
+        if (ads.ReadMilliVolts(0) == 32) { Console.WriteLine("[PASS] ads1115 mV") } else { Console.WriteLine("[FAIL] ads1115 mV got " + String_FromInt(ads.ReadMilliVolts(0))); fail = fail + 1 }
+
         if (fail == 0) { Console.WriteLine("sensor: all good") }
     }
 }

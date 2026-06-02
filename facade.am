@@ -348,3 +348,45 @@ public class Ina219 {
         let _w: bool = this.bus.WriteBytes(this.addr, l)
     }
 }
+
+// ADS1115 — 16-bit 4-channel I²C ADC (addr 0x48). Higher resolution
+// than the MCP3008 and no SPI needed. Single-shot read per channel at
+// the ±4.096 V range (0.125 mV/LSB). Needs a Clock for the conversion
+// wait. ReadRaw → signed 16-bit; ReadMilliVolts → mV.
+public class Ads1115 {
+    private bus:  I2cBus
+    private addr: int
+    private clk:  Clock
+
+    public Ads1115(bus: I2cBus, addr: int, clk: Clock) {
+        this.bus = bus
+        this.addr = addr
+        this.clk = clk
+    }
+
+    // Read single-ended channel 0..3 → signed raw (-32768..32767).
+    public int ReadRaw(channel: int) {
+        if (channel < 0 || channel > 3) { return 0 }
+        // OS=1, MUX=100+ch, PGA=±4.096V, single-shot, 128SPS, comp off.
+        let config: int = 50051 + channel * 4096
+        let cfg: List<int> = new List<int>()
+        cfg.Add(0x01)            // point at config register
+        cfg.Add(config / 256)
+        cfg.Add(config % 256)
+        let _w: bool = this.bus.WriteBytes(this.addr, cfg)
+        this.clk.DelayMs(9)      // 128SPS → ~8ms conversion
+        let ptr: List<int> = new List<int>()
+        ptr.Add(0x00)            // point at conversion register
+        let _p: bool = this.bus.WriteBytes(this.addr, ptr)
+        let d: List<int> = this.bus.ReadBytes(this.addr, 2)
+        if (d.Count() < 2) { return 0 }
+        let v: int = d.Get(0) * 256 + d.Get(1)
+        if (v > 32767) { return v - 65536 }
+        return v
+    }
+
+    // Millivolts at the ±4.096 V range (0.125 mV/LSB → raw/8).
+    public int ReadMilliVolts(channel: int) {
+        return this.ReadRaw(channel) / 8
+    }
+}
