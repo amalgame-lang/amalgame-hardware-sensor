@@ -220,3 +220,84 @@ public class Bme280 {
         this.hMilli = ((v / 1024) * 1000) / 1024
     }
 }
+
+// MPU-6050 — 6-axis IMU (3-axis accelerometer + 3-axis gyroscope) over
+// I²C (addr 0x68 or 0x69). The cornerstone of drones / self-balancing
+// robots / motion sensing. Read() burst-reads all axes; accessors
+// return raw signed 16-bit counts (±32768) — scale per your configured
+// range (default ±2g / ±250°/s).
+public class Mpu6050 {
+    private bus:  I2cBus
+    private addr: int
+    private ax: int  private ay: int  private az: int
+    private gx: int  private gy: int  private gz: int
+    private tCenti: int
+
+    public Mpu6050(bus: I2cBus, addr: int) {
+        this.bus = bus
+        this.addr = addr
+        this.ax = 0  this.ay = 0  this.az = 0
+        this.gx = 0  this.gy = 0  this.gz = 0
+        this.tCenti = 0
+        // Wake from sleep: PWR_MGMT_1 (0x6B) = 0.
+        let _w: bool = this.bus.WriteReg(this.addr, 0x6B, 0x00)
+    }
+
+    public bool IsPresent() {
+        return this.bus.ReadReg(this.addr, 0x75) == 0x68   // WHO_AM_I
+    }
+
+    public int AccelX() { return this.ax }
+    public int AccelY() { return this.ay }
+    public int AccelZ() { return this.az }
+    public int GyroX()  { return this.gx }
+    public int GyroY()  { return this.gy }
+    public int GyroZ()  { return this.gz }
+    public int TempCenti() { return this.tCenti }
+
+    // Burst-read 14 bytes from 0x3B: accel(6), temp(2), gyro(6).
+    public void Read() {
+        let ptr: List<int> = new List<int>()
+        ptr.Add(0x3B)
+        let _w: bool = this.bus.WriteBytes(this.addr, ptr)
+        let d: List<int> = this.bus.ReadBytes(this.addr, 14)
+        if (d.Count() < 14) { return }
+        this.ax = this.S16(d.Get(0), d.Get(1))
+        this.ay = this.S16(d.Get(2), d.Get(3))
+        this.az = this.S16(d.Get(4), d.Get(5))
+        let rawT: int = this.S16(d.Get(6), d.Get(7))
+        // datasheet: °C = raw/340 + 36.53  → ×100 centi-degrees.
+        this.tCenti = (rawT * 100) / 340 + 3653
+        this.gx = this.S16(d.Get(8), d.Get(9))
+        this.gy = this.S16(d.Get(10), d.Get(11))
+        this.gz = this.S16(d.Get(12), d.Get(13))
+    }
+
+    private int S16(hi: int, lo: int) {
+        let v: int = hi * 256 + lo
+        if (v > 32767) { return v - 65536 }
+        return v
+    }
+}
+
+// BH1750 — ambient light sensor over I²C (addr 0x23 or 0x5C). Returns
+// illuminance in lux. Common in weather stations / auto-backlight.
+public class Bh1750 {
+    private bus:  I2cBus
+    private addr: int
+
+    public Bh1750(bus: I2cBus, addr: int) {
+        this.bus = bus
+        this.addr = addr
+        let _on: bool = this.bus.WriteByte(this.addr, 0x01)   // power on
+    }
+
+    // Continuous high-res mode (1 lx). Returns lux (-1 on error).
+    public int ReadLux() {
+        let _m: bool = this.bus.WriteByte(this.addr, 0x10)    // CONT_H_RES
+        let d: List<int> = this.bus.ReadBytes(this.addr, 2)
+        if (d.Count() < 2) { return 0 - 1 }
+        let raw: int = d.Get(0) * 256 + d.Get(1)
+        return (raw * 10) / 12                                 // /1.2 → lux
+    }
+}

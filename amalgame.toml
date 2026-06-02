@@ -6,20 +6,22 @@
 #   Hcsr04   — ultrasonic distance (DigitalOut trig + DigitalIn echo + Clock)
 #   Mcp3008  — 8-ch 10-bit SPI ADC (SpiBus) — the Pi has no analog input
 #   Bme280   — temperature / pressure / humidity over I2C (I2cBus)
+#   Mpu6050  — 6-axis IMU (accel + gyro) over I2C — drones / robots (v0.2)
+#   Bh1750   — ambient light (lux) over I2C (v0.2)
 #
 # Pure Amalgame; no C, no system dependency (the backend brings those).
 
 [package]
 name              = "amalgame-hardware-sensor"
-version           = "0.1.0"
+version           = "0.2.0"
 license           = "Apache-2.0"
-description       = "Portable sensor drivers (HC-SR04 distance, MCP3008 SPI ADC, BME280 temp/pressure/humidity) over Amalgame.Hal — one driver, runs on Raspberry Pi and future MCU backends. For weather stations, drones, robots."
+description       = "Portable sensor drivers (HC-SR04 distance, MCP3008 SPI ADC, BME280 env, MPU6050 IMU, BH1750 light) over Amalgame.Hal — one driver, runs on Raspberry Pi and future MCU backends. For weather stations, drones, robots."
 authors           = ["Bastien Mouget"]
 required-amalgame = ">=0.8.72"
 schema-version    = 1
 
 [stdlib]
-classes   = ["Hcsr04", "Mcp3008", "Bme280"]
+classes   = ["Hcsr04", "Mcp3008", "Bme280", "Mpu6050", "Bh1750"]
 header    = "facade-stub.h"
 namespace = "Amalgame.Hardware.Sensor"
 facade    = "facade.am"
