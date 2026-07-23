@@ -172,9 +172,14 @@ public class Bme280 {
         this.h1 = this.U8(0xA1)
         this.h2 = this.S16(0xE1)
         this.h3 = this.U8(0xE3)
-        let e4: int = this.U8(0xE4)
+        // dig_H4/dig_H5 are signed 12-bit values; their MSB byte (E4 for
+        // H4, E6 for H5) must be sign-extended from int8 before use — a
+        // plain unsigned U8() flips the sign whenever bit 7 is set.
+        var e4: int = this.U8(0xE4)
+        if (e4 > 127) { e4 = e4 - 256 }
         let e5: int = this.U8(0xE5)
-        let e6: int = this.U8(0xE6)
+        var e6: int = this.U8(0xE6)
+        if (e6 > 127) { e6 = e6 - 256 }
         this.h4 = e4 * 16 + (e5 % 16)
         this.h5 = (e6 * 16) + (e5 / 16)
         var h6: int = this.U8(0xE7)
@@ -182,42 +187,72 @@ public class Bme280 {
         this.h6 = h6
     }
 
-    // Bosch integer compensation (datasheet reference).
+    // Bosch integer compensation (datasheet reference). Every division by
+    // a power of two that corresponds to a `>>` in Bosch's reference C
+    // driver MUST be a real `>>`, not `/`: intermediate values here go
+    // negative at ordinary room temperature, and `/` truncates toward
+    // zero while `>>` floors toward -infinity — they disagree whenever
+    // the operand is negative. (Fixed 2026-07-23: pressure was reading
+    // ~35% low and humidity ~4x high because of this off the Bosch
+    // reference; the H fix also restores a `>>12` the port had dropped
+    // before the final /1024 milli-percent conversion.)
     private void CompensateT(adcT: int) {
-        let v1: int = (((adcT / 8) - (this.t1 * 2)) * this.t2) / 2048
-        let v2a: int = (adcT / 16) - this.t1
-        let v2: int = (((v2a * v2a) / 4096) * this.t3) / 16384
+        let v1: int = (((adcT >> 3) - (this.t1 << 1)) * this.t2) >> 11
+        let v2a: int = (adcT >> 4) - this.t1
+        let v2: int = (((v2a * v2a) >> 12) * this.t3) >> 14
         this.tFine = v1 + v2
-        this.tCenti = (this.tFine * 5 + 128) / 256
+        this.tCenti = ((this.tFine * 5) + 128) >> 8
     }
 
     private void CompensateP(adcP: int) {
         // Bosch BME280_compensate_P_int32, lifted to i64 (so the 32-bit
         // unsigned-overflow branch collapses to a single divide).
-        var v1: int = (this.tFine / 2) - 64000
-        var v2: int = (((v1 / 4) * (v1 / 4)) / 2048) * this.p6
-        v2 = v2 + ((v1 * this.p5) * 2)
-        v2 = (v2 / 4) + (this.p4 * 65536)
-        v1 = ((((this.p3 * (((v1 / 4) * (v1 / 4)) / 8192)) / 8) + ((this.p2 * v1) / 2)) / 262144)
-        v1 = ((32768 + v1) * this.p1) / 32768
+        var v1: int = (this.tFine >> 1) - 64000
+        var v2: int = (((v1 >> 2) * (v1 >> 2)) >> 11) * this.p6
+        v2 = v2 + ((v1 * this.p5) << 1)
+        v2 = (v2 >> 2) + (this.p4 << 16)
+        v1 = (((this.p3 * (((v1 >> 2) * (v1 >> 2)) >> 13)) >> 3) + ((this.p2 * v1) >> 1)) >> 18
+        v1 = ((32768 + v1) * this.p1) >> 15
         if (v1 == 0) { this.pPa = 0; return }
-        var p: int = ((1048576 - adcP) - (v2 / 4096)) * 3125
+        var p: int = ((1048576 - adcP) - (v2 >> 12)) * 3125
         p = (p * 2) / v1
-        let v3: int = (this.p9 * (((p / 8) * (p / 8)) / 8192)) / 4096
-        let v4: int = ((p / 4) * this.p8) / 8192
-        p = p + ((v3 + v4 + this.p7) / 16)
+        let v3: int = (this.p9 * (((p >> 3) * (p >> 3)) >> 13)) >> 12
+        let v4: int = ((p >> 2) * this.p8) >> 13
+        p = p + ((v3 + v4 + this.p7) >> 4)
         this.pPa = p
     }
 
     private void CompensateH(adcH: int) {
         var v: int = this.tFine - 76800
-        v = (((((adcH * 16384) - (this.h4 * 1048576) - (this.h5 * v)) + 16384) / 32768) *
-             (((((((v * this.h6) / 1024) * (((v * this.h3) / 2048) + 32768)) / 1024) + 2097152) * this.h2 + 8192) / 16384))
-        v = v - (((((v / 32768) * (v / 32768)) / 128) * this.h1) / 16)
+
+        let aTerm1: int = adcH << 14
+        let aTerm2: int = this.h4 << 20
+        let aTerm3: int = this.h5 * v
+        let aSum: int = (aTerm1 - aTerm2 - aTerm3) + 16384
+        let a: int = aSum >> 15
+
+        let b1: int = (v * this.h6) >> 10
+        let b2Inner: int = (v * this.h3) >> 11
+        let b2: int = b2Inner + 32768
+        let b3: int = (b1 * b2) >> 10
+        let bInner: int = b3 + 2097152
+        let bProd: int = bInner * this.h2
+        let bSum: int = bProd + 8192
+        let b: int = bSum >> 14
+
+        v = a * b
+
+        let cInner: int = v >> 15
+        let c: int = (cInner * cInner) >> 7
+        let cProd: int = c * this.h1
+        v = v - (cProd >> 4)
         if (v < 0) { v = 0 }
         if (v > 419430400) { v = 419430400 }
-        // v is %RH in Q22.10 → ×1000 milli-percent.
-        this.hMilli = ((v / 1024) * 1000) / 1024
+        // v >> 12 → %RH in Q22.10 (i.e. %RH = (v>>12)/1024) — then ×1000
+        // for milli-percent. Both operands are non-negative past the
+        // clamp above, so the final /1024 truncation is safe.
+        v = v >> 12
+        this.hMilli = (v * 1000) / 1024
     }
 }
 
