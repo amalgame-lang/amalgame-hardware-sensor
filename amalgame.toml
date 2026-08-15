@@ -13,7 +13,7 @@
 
 [package]
 name              = "amalgame-hardware-sensor"
-version           = "0.6.0"
+version           = "0.6.1"
 license           = "Apache-2.0"
 description       = "Portable sensor drivers (HC-SR04 distance, MCP3008 SPI ADC, BME280 env, MPU6050 IMU, BH1750 light) over Amalgame.Hal — one driver, runs on Raspberry Pi and future MCU backends. For weather stations, drones, robots."
 authors           = ["Bastien Mouget"]
